@@ -216,7 +216,7 @@ class Bar(object):
             frac = info["frac"]
             bar_length, frac_bar_length = divmod(int(frac * N_BARS * nsyms), nsyms)
 
-            res = charset[-1] * bar_length
+            res = info["character"] * bar_length
             total_res += self.colour + res + self.COLOUR_RESET if self.colour else res
             total_length += bar_length
             total_frac_length = frac_bar_length
@@ -542,11 +542,16 @@ class tqdm(Comparable):
 
             # Formatting progress bar space available for bar's display
             color_map = {
-                "default": "WHITE",
-                "no_change": "BLUE",
-                "ok": "GREEN",
-                "warning": "YELLOW",
-                "error": "RED",
+                #"no_change": "BLUE",
+                #"ok": "GREEN",
+                #"warning": "YELLOW",
+                #"error": "RED",
+            }
+            character_map = {
+                "no_change": "-",
+                "ok": "#",
+                "warning": "W",
+                "error": "E",
             }
             order_map = {
                 "no_change": 0,
@@ -557,8 +562,9 @@ class tqdm(Comparable):
             }
             state = [
                 (key, {
-                    "color": color_map[key],
+                    "color": color_map.get(key, "WHITE"),
                     "frac": value / total,
+                    "character": character_map.get(key, "#"),
                     "order": order_map[key],
                 })
                 for key, value in extra_kwargs["type_count"].items()
@@ -579,7 +585,7 @@ class tqdm(Comparable):
             nobar = bar_format.format(bar=full_bar, **format_dict)
             if not full_bar.format_called:
                 return nobar
-            full_bar = Bar({"default": {"color": colour, "frac": 0}},
+            full_bar = Bar({"default": {"color": colour, "frac": 0, "character": "#"}},
                            max(1, ncols - disp_len(nobar)) if ncols else 10,
                            charset=Bar.BLANK)
             res = bar_format.format(bar=full_bar, **format_dict)
