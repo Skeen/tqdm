@@ -152,12 +152,12 @@ class Bar(object):
                'YELLOW': '\x1b[33m', 'BLUE': '\x1b[34m', 'MAGENTA': '\x1b[35m',
                'CYAN': '\x1b[36m', 'WHITE': '\x1b[37m'}
 
-    def __init__(self, frac, default_len=10, charset=UTF, colour=None):
-        if not 0 <= frac <= 1:
-            warn("clamping frac to range [0, 1]", TqdmWarning, stacklevel=2)
-            frac = max(0, min(1, frac))
+    def __init__(self, state, default_len=10, charset=UTF, colour=None):
+        #if not 0 <= frac <= 1:
+        #    warn("clamping frac to range [0, 1]", TqdmWarning, stacklevel=2)
+        #    frac = max(0, min(1, frac))
         assert default_len > 0
-        self.frac = frac
+        self.state = state
         self.default_len = default_len
         self.charset = charset
         self.colour = colour
@@ -205,13 +205,25 @@ class Bar(object):
             N_BARS = self.default_len
 
         nsyms = len(charset) - 1
-        bar_length, frac_bar_length = divmod(int(self.frac * N_BARS * nsyms), nsyms)
 
-        res = charset[-1] * bar_length
-        if bar_length < N_BARS:  # whitespace padding
-            res = res + charset[frac_bar_length] + \
-                charset[0] * (N_BARS - bar_length - 1)
-        return self.colour + res + self.COLOUR_RESET if self.colour else res
+        total_res = ""
+        total_length = 0
+        total_frac_length = 0
+        self.state = sorted(self.state, key=lambda tup: tup[1]["order"])
+        # print([bar_name for bar_name, _ in self.state])
+        for bar_name, info in self.state:
+            self.colour = info["color"]
+            frac = info["frac"]
+            bar_length, frac_bar_length = divmod(int(frac * N_BARS * nsyms), nsyms)
+
+            res = charset[-1] * bar_length
+            total_res += self.colour + res + self.COLOUR_RESET if self.colour else res
+            total_length += bar_length
+            total_frac_length = frac_bar_length
+        if total_length < N_BARS:  # whitespace padding
+            total_res = total_res + charset[total_frac_length] + \
+                charset[0] * (N_BARS - total_length - 1)
+        return total_res
 
 
 class EMA(object):
@@ -529,10 +541,31 @@ class tqdm(Comparable):
                 return nobar
 
             # Formatting progress bar space available for bar's display
-            full_bar = Bar(frac,
+            color_map = {
+                "default": "WHITE",
+                "no_change": "BLUE",
+                "ok": "GREEN",
+                "warning": "YELLOW",
+                "error": "RED",
+            }
+            order_map = {
+                "no_change": 0,
+                "ok": 1,
+                "warning": 2,
+                "error": 3,
+                "default": 4
+            }
+            state = [
+                (key, {
+                    "color": color_map[key],
+                    "frac": value / total,
+                    "order": order_map[key],
+                })
+                for key, value in extra_kwargs["type_count"].items()
+            ]
+            full_bar = Bar(state,
                            max(1, ncols - disp_len(nobar)) if ncols else 10,
-                           charset=Bar.ASCII if ascii is True else ascii or Bar.UTF,
-                           colour=colour)
+                           charset=Bar.ASCII if ascii is True else ascii or Bar.UTF)
             if not _is_ascii(full_bar.charset) and _is_ascii(bar_format):
                 bar_format = _unicode(bar_format)
             res = bar_format.format(bar=full_bar, **format_dict)
@@ -546,9 +579,9 @@ class tqdm(Comparable):
             nobar = bar_format.format(bar=full_bar, **format_dict)
             if not full_bar.format_called:
                 return nobar
-            full_bar = Bar(0,
+            full_bar = Bar({"default": {"color": colour, "frac": 0}},
                            max(1, ncols - disp_len(nobar)) if ncols else 10,
-                           charset=Bar.BLANK, colour=colour)
+                           charset=Bar.BLANK)
             res = bar_format.format(bar=full_bar, **format_dict)
             return disp_trim(res, ncols) if ncols else res
         else:
@@ -996,6 +1029,7 @@ class tqdm(Comparable):
                 self.pos = self._get_free_pos(self)
                 self._instances.remove(self)
             self.n = initial
+            self.type_count = {"default": initial}
             self.total = total
             self.leave = leave
             return
@@ -1091,6 +1125,7 @@ class tqdm(Comparable):
         # Init the iterations counters
         self.last_print_n = initial
         self.n = initial
+        self.type_count = {"default": initial}
 
         # if nested, at initial sp() call we replace '\r' by '\n' to
         # not overwrite the outer progress bar
@@ -1190,9 +1225,10 @@ class tqdm(Comparable):
                         last_print_t = self.last_print_t
         finally:
             self.n = n
+            self.type_count["default"] = n
             self.close()
 
-    def update(self, n=1):
+    def update(self, n=1, label="default"):
         """
         Manually update the progress bar, useful for streams
         such as reading files.
@@ -1220,6 +1256,10 @@ class tqdm(Comparable):
         """
         if self.disable:
             return
+
+        if label not in self.type_count:
+            self.type_count[label] = 0
+        self.type_count[label] += n
 
         if n < 0:
             self.last_print_n += n  # for auto-refresh logic to work
@@ -1270,6 +1310,9 @@ class tqdm(Comparable):
         # decrement instance pos and remove from internal set
         pos = abs(self.pos)
         self._decr_instances(self)
+
+        if not hasattr(self, "last_print_t"):
+            return
 
         if self.last_print_t < self.start_t + self.delay:
             # haven't ever displayed; nothing to clear
@@ -1365,6 +1408,7 @@ class tqdm(Comparable):
         total  : int or float, optional. Total to use for the new bar.
         """
         self.n = 0
+        self.type_count = {}
         if total is not None:
             self.total = total
         if self.disable:
@@ -1456,7 +1500,9 @@ class tqdm(Comparable):
             'rate': self._ema_dn() / self._ema_dt() if self._ema_dt() else None,
             'bar_format': self.bar_format, 'postfix': self.postfix,
             'unit_divisor': self.unit_divisor, 'initial': self.initial,
-            'colour': self.colour}
+            'colour': self.colour,
+            'type_count': self.type_count
+        }
 
     def display(self, msg=None, pos=None):
         """
